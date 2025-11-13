@@ -1,6 +1,8 @@
 use clap::Parser;
 use crossbeam_channel::unbounded;
+use ignore::overrides::OverrideBuilder;
 use ignore::{DirEntry, WalkBuilder};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// A blazing fast project scanner that intelligently ignores files
@@ -40,8 +42,11 @@ struct Cli {
 /// 路径会按字母顺序排序，以确保输出的一致性。
 fn run_scanner(path: &Path) -> Vec<PathBuf> {
     let (tx, rx) = unbounded::<PathBuf>();
-
-    WalkBuilder::new(path)
+    let mut builder = WalkBuilder::new(path);
+    let mut override_builder = OverrideBuilder::new(path);
+    override_builder.add("!.git/").unwrap();
+    builder.overrides(override_builder.build().unwrap());
+    builder
         .standard_filters(true)
         .hidden(false)
         .parents(true)
@@ -73,14 +78,197 @@ fn run_scanner(path: &Path) -> Vec<PathBuf> {
     collected_paths
 }
 
+/// Represents a node in the project directory tree structure.
+///
+/// 表示项目目录树结构中的一个节点。
+///
+/// This enum is used to build a hierarchical representation of the filesystem,
+/// where each node can either be a file or a directory containing other nodes.
+/// 此枚举用于构建文件系统的层级表示，
+/// 其中每个节点可以是文件或包含其他节点的目录。
+///
+/// # Variants
+///
+/// * `File` - Represents a file in the tree.
+///   - `File` - 表示树中的一个文件。
+/// * `Directory(HashMap<String, TreeNode>)` - Represents a directory containing child nodes.
+///   - `Directory(HashMap<String, TreeNode>)` - 表示包含子节点的目录。
+enum TreeNode {
+    File,
+    Directory(HashMap<String, TreeNode>),
+}
+
+/// Inserts a path into the tree structure recursively.
+///
+/// 递归地将路径插入到树结构中。
+///
+/// # Arguments
+///
+/// * `node` - A mutable reference to the current TreeNode.
+///   - `node` - 对当前 TreeNode 的可变引用。
+/// * `components` - A slice of path components as strings.
+///   - `components` - 路径组件的字符串切片。
+fn insert_path(node: &mut TreeNode, components: &[String]) {
+    if components.is_empty() {
+        return;
+    }
+    if let TreeNode::Directory(children) = node {
+        if components.len() == 1 {
+            children.insert(components[0].clone(), TreeNode::File);
+        } else {
+            let child = children
+                .entry(components[0].clone())
+                .or_insert(TreeNode::Directory(HashMap::new()));
+            insert_path(child, &components[1..]);
+        }
+    }
+}
+
+/// Generates a string representation of the project's directory tree.
+///
+/// This function converts a flat list of file paths into a hierarchical,
+/// text-based tree structure, similar to the output of the `tree` command.
+///
+/// 生成项目目录树的字符串表示。
+///
+/// 此函数将一个扁平的文件路径列表转换为一个层级化的、基于文本的
+/// 树形结构，类似于 `tree` 命令的输出。
+///
+/// # Arguments
+///
+/// * `base_path` - The root path of the project, used to determine relative paths.
+///   - `base_path` - 项目的根路径，用于计算相对路径。
+/// * `paths` - A slice of `PathBuf` containing the files to be included.
+///   - `paths` - 一个 `PathBuf` 的切片，包含所有需要被包含的文件。
+///
+/// # Returns
+///
+/// A `String` containing the formatted directory tree.
+/// 一个 `String`，其中包含格式化后的目录树。
+fn generate_project_tree(base_path: &Path, paths: &[PathBuf]) -> String {
+    let mut root = TreeNode::Directory(HashMap::new());
+    for path in paths {
+        let relative_path = match path.strip_prefix(base_path) {
+            Ok(rel) => rel,
+            Err(_) => path.as_path(),
+        };
+        let components: Vec<String> = relative_path
+            .components()
+            .map(|c| c.as_os_str().to_str().unwrap().to_string())
+            .collect();
+        insert_path(&mut root, &components);
+    }
+
+    fn build_tree_string(node: &TreeNode, prefix: &str) -> String {
+        if let TreeNode::Directory(children) = node {
+            let mut entries: Vec<_> = children.keys().collect();
+            entries.sort();
+
+            let mut result = String::new();
+            for (i, name) in entries.iter().enumerate() {
+                let is_last = i == entries.len() - 1;
+                let connector = if is_last { "└── " } else { "├── " };
+                let child_prefix = if is_last { "    " } else { "│   " };
+
+                result.push_str(&format!("{}{}{}\n", prefix, connector, name));
+
+                if let Some(child_node) = children.get(*name) {
+                    if let TreeNode::Directory(_) = child_node {
+                        result.push_str(&build_tree_string(
+                            child_node,
+                            &format!("{}{}", prefix, child_prefix),
+                        ));
+                    }
+                }
+            }
+            return result;
+        }
+        String::new()
+    }
+
+    ".\n".to_owned() + &build_tree_string(&root, "")
+}
+
+/// Generates the complete snapshot content as a Markdown string.
+///
+/// This function takes a list of file paths and orchestrates the creation of
+/// the final snapshot. It will be responsible for building the project tree
+/// visualization and appending the content of each file.
+///
+/// 生成完整的快照内容，格式为 Markdown 字符串。
+///
+/// 此函数接收一个文件路径列表，并主导最终快照的创建过程。它将负责
+/// 构建项目树的可视化表示，并附加每个文件的内容。
+///
+/// # Arguments
+///
+/// * `project_name` - The name of the project, used in the snapshot header.
+///   - `project_name` - 项目的名称，用于快照的标题。
+/// * `paths` - A slice of `PathBuf` containing the files to be included.
+///   - `paths` - 一个 `PathBuf` 的切片，包含所有需要被包含的文件。
+///
+/// # Returns
+///
+/// A `String` containing the full Markdown snapshot.
+/// 一个 `String`，其中包含完整的 Markdown 快照。
+fn generate_snapshot_content(project_name: &str, base_path: &Path, paths: &[PathBuf]) -> String {
+    let header = format!("# Project Snapshot: {}\n\n", project_name);
+    let summary = format!(
+        "This file contains a snapshot of the project structure and source code, formatted for AI consumption.\n"
+    );
+    let total_files = format!("Total files included: {}\n\n", paths.len());
+
+    let project_tree_str = generate_project_tree(base_path, paths);
+    let project_tree = format!("```\n{}\n```\n\n", project_tree_str);
+
+    let file_contents_header = "## File Contents\n\n";
+    let file_contents: String = paths
+        .iter()
+        .map(|path| {
+            let relative_path = path.strip_prefix(base_path).unwrap_or(path);
+            let content = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(e) => format!("Error reading file: {}", e),
+            };
+            let lang = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+            format!(
+                "```{}\n{}\n```\n\n",
+                format_args!("{}:{}", lang, relative_path.display()),
+                content
+            )
+        })
+        .collect();
+
+    [
+        header,
+        summary,
+        total_files,
+        project_tree,
+        file_contents_header.to_owned(),
+        file_contents,
+    ]
+    .concat()
+}
+
 fn main() {
     let cli = Cli::parse();
+    let project_path = &cli.path;
+    let project_name = cli
+        .path
+        .file_name()
+        .unwrap_or_else(|| cli.path.as_os_str())
+        .to_string_lossy();
+
     let file_paths = run_scanner(&cli.path);
 
-    println!("Found {} files to include:", file_paths.len());
-    for path in file_paths {
-        println!("{}", path.display());
+    if file_paths.is_empty() {
+        println!("No files to include in the snapshot. Exiting.");
+        return;
     }
+
+    let snapshot = generate_snapshot_content(&project_name, project_path, &file_paths);
+    println!("{}", snapshot);
 }
 
 /// Unit tests for the scanner functionality.
