@@ -73,14 +73,72 @@ fn run_scanner(path: &Path) -> Vec<PathBuf> {
     collected_paths
 }
 
+/// Generates the complete snapshot content as a Markdown string.
+///
+/// This function takes a list of file paths and orchestrates the creation of
+/// the final snapshot. It will be responsible for building the project tree
+/// visualization and appending the content of each file.
+///
+/// 生成完整的快照内容，格式为 Markdown 字符串。
+///
+/// 此函数接收一个文件路径列表，并主导最终快照的创建过程。它将负责
+/// 构建项目树的可视化表示，并附加每个文件的内容。
+///
+/// # Arguments
+///
+/// * `project_name` - The name of the project, used in the snapshot header.
+///   - `project_name` - 项目的名称，用于快照的标题。
+/// * `paths` - A slice of `PathBuf` containing the files to be included.
+///   - `paths` - 一个 `PathBuf` 的切片，包含所有需要被包含的文件。
+///
+/// # Returns
+///
+/// A `String` containing the full Markdown snapshot.
+/// 一个 `String`，其中包含完整的 Markdown 快照。
+fn generate_snapshot_content(project_name: &str, paths: &[PathBuf]) -> String {
+    let header = format!("# Project Snapshot: {}\n\n", project_name);
+    let summary = format!(
+        "This file contains a snapshot of the project structure and source code, formatted for AI consumption.\n"
+    );
+    let total_files = format!("Total files included: {}\n\n", paths.len());
+
+    // --- Placeholder for Project Tree ---
+    let project_tree_header = "## Project Structure\n\n";
+    let project_tree = "```\nTODO: Implement project tree here\n```\n\n";
+
+    // --- Placeholder for File Contents ---
+    let file_contents_header = "## File Contents\n\n";
+    let file_contents = "```\nTODO: Implement file content appending here\n```\n\n";
+
+    [
+        header,
+        summary,
+        total_files,
+        project_tree_header.to_owned(),
+        project_tree.to_owned(),
+        file_contents_header.to_owned(),
+        file_contents.to_owned(),
+    ]
+    .concat()
+}
+
 fn main() {
     let cli = Cli::parse();
+    let project_name = cli
+        .path
+        .file_name()
+        .unwrap_or_else(|| cli.path.as_os_str())
+        .to_string_lossy();
+
     let file_paths = run_scanner(&cli.path);
 
-    println!("Found {} files to include:", file_paths.len());
-    for path in file_paths {
-        println!("{}", path.display());
+    if file_paths.is_empty() {
+        println!("No files to include in the snapshot. Exiting.");
+        return;
     }
+
+    let snapshot = generate_snapshot_content(&project_name, &file_paths);
+    println!("{}", snapshot);
 }
 
 /// Unit tests for the scanner functionality.
