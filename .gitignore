@@ -1,0 +1,10 @@
+# Rust target directory
+/target/
+
+# IDE configuration files
+.vscode/
+.idea/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
