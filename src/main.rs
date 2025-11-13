@@ -218,21 +218,35 @@ fn generate_snapshot_content(project_name: &str, base_path: &Path, paths: &[Path
     );
     let total_files = format!("Total files included: {}\n\n", paths.len());
 
-    // --- Placeholder for Project Tree ---
     let project_tree_str = generate_project_tree(base_path, paths);
     let project_tree = format!("```\n{}\n```\n\n", project_tree_str);
 
-    // --- Placeholder for File Contents ---
     let file_contents_header = "## File Contents\n\n";
-    let file_contents = "```\nTODO: Implement file content appending here\n```\n\n";
+    let file_contents: String = paths
+        .iter()
+        .map(|path| {
+            let relative_path = path.strip_prefix(base_path).unwrap_or(path);
+            let content = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(e) => format!("Error reading file: {}", e),
+            };
+            let lang = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+            format!(
+                "```{}\n{}\n```\n\n",
+                format_args!("{}:{}", lang, relative_path.display()),
+                content
+            )
+        })
+        .collect();
 
     [
         header,
         summary,
         total_files,
-        project_tree.to_owned(),
+        project_tree,
         file_contents_header.to_owned(),
-        file_contents.to_owned(),
+        file_contents,
     ]
     .concat()
 }
