@@ -15,6 +15,18 @@ struct Cli {
     /// 需要扫描的项目目录路径。
     #[arg(default_value = ".")]
     path: PathBuf,
+
+    /// Output the snapshot content to a specified file.
+    /// 将快照内容输出到指定文件。
+    #[arg(short, long)]
+    out: Option<PathBuf>,
+
+    /// Output the snapshot content as plain text to standard output.
+    /// This is the default behavior if --out is not specified.
+    /// 将快照内容作为纯文本输出到标准输出。
+    /// 如果未指定 --out，则此为默认行为。
+    #[arg(short, long, default_value_t = true)]
+    text: bool,
 }
 
 /// Scans a directory and returns a vector of valid file paths.
@@ -254,21 +266,32 @@ fn generate_snapshot_content(project_name: &str, base_path: &Path, paths: &[Path
 fn main() {
     let cli = Cli::parse();
     let project_path = &cli.path;
-    let project_name = cli
-        .path
+    let project_name = project_path
         .file_name()
-        .unwrap_or_else(|| cli.path.as_os_str())
+        .unwrap_or_else(|| project_path.as_os_str())
         .to_string_lossy();
 
-    let file_paths = run_scanner(&cli.path);
+    let file_paths = run_scanner(project_path);
 
     if file_paths.is_empty() {
-        println!("No files to include in the snapshot. Exiting.");
+        // Use stderr for error messages or status updates
+        eprintln!("No files to include in the snapshot. Exiting.");
         return;
     }
 
-    let snapshot = generate_snapshot_content(&project_name, project_path, &file_paths);
-    println!("{}", snapshot);
+    let snapshot_content: String =
+        generate_snapshot_content(&project_name, project_path, &file_paths);
+
+    if let Some(output_path) = cli.out {
+        std::fs::write(&output_path, &snapshot_content).expect("Failed to write to output file");
+        eprintln!(
+            "Snapshot successfully written to: {}",
+            output_path.display()
+        );
+    } else {
+        // Default behavior: print to standard output
+        println!("{}", snapshot_content);
+    }
 }
 
 /// Unit tests for the scanner functionality.
@@ -310,4 +333,40 @@ mod tests {
 
         assert_eq!(result_paths, expected_paths);
     }
+}
+
+/// Tests the project tree generation logic.
+///
+/// This test provides a predefined set of paths and a base path, then
+/// verifies that the generated tree string matches the expected hierarchical
+/// structure, including correct connectors and sorting.
+///
+/// 测试项目树生成逻辑。
+///
+/// 本测试提供一组预定义的路径和一个基础路径，然后验证生成的树字符串
+/// 是否与预期的层级结构匹配，包括正确的连接符和排序。
+#[test]
+fn test_generate_project_tree() {
+    // 1. Setup: Define a base path and a list of file paths
+    let base_path = Path::new("/tmp/test-project");
+    let paths = vec![
+        base_path.join("src/main.rs"),
+        base_path.join("Cargo.toml"),
+        base_path.join("src/module/api.rs"),
+        base_path.join(".gitignore"),
+    ];
+
+    // 2. Execution: Generate the project tree
+    let tree = generate_project_tree(base_path, &paths);
+
+    // 3. Assertion: Check against the expected string output
+    let expected_tree = r#".
+├── .gitignore
+├── Cargo.toml
+└── src
+    ├── main.rs
+    └── module
+        └── api.rs
+"#;
+    assert_eq!(tree.trim(), expected_tree.trim());
 }
